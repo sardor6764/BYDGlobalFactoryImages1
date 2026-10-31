@@ -1,1 +1,61 @@
+name: Build PDF
+on: workflow_dispatch
 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: pip install pypdf beautifulsoup4
+
+      - name: Build PDF
+        run: |
+          cat > build.py << 'EOF'
+          import subprocess
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor
+          from bs4 import BeautifulSoup
+          from pypdf import PdfWriter
+
+          docs = Path("docs").resolve()
+          out = Path("pages_pdf"); out.mkdir(exist_ok=True)
+
+          soup = BeautifulSoup((docs/"tocnav.html").read_text(errors="ignore"), "html.parser")
+          pages, seen = [], set()
+          for a in soup.find_all("a", href=True):
+              h = a["href"].split("#")[0]
+              if h.endswith(".html") and (docs/h).exists() and h not in seen:
+                  seen.add(h); pages.append(h)
+          for f in sorted(docs.glob("DT*.html")):
+              if f.name not in seen:
+                  pages.append(f.name)
+          print("pages:", len(pages))
+
+          def conv(args):
+              i, p = args
+              pdf = out/f"{i:05d}.pdf"
+              subprocess.run(["google-chrome", "--headless", "--no-sandbox",
+                  "--disable-gpu", "--allow-file-access-from-files",
+                  "--no-pdf-header-footer", f"--user-data-dir=/tmp/c{i}",
+                  f"--print-to-pdf={pdf}", (docs/p).as_uri()],
+                  check=False, timeout=120)
+              return i, p, pdf
+
+          with ThreadPoolExecutor(4) as ex:
+              results = list(ex.map(conv, enumerate(pages, 1)))
+
+          w = PdfWriter()
+          for i, p, pdf in results:
+              if pdf.exists():
+                  w.append(str(pdf), outline_item=p)
+          w.write("BYD_Song_Plus_EV_Maintenance_Manual.pdf")
+          EOF
+          python build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BYD-manual-pdf
+          path: BYD_Song_Plus_EV_Maintenance_Manual.pdf
